@@ -39,6 +39,12 @@ from src.llm.types import Message
 # Exceções re-tentadas pelo tenacity (5xx vira LLMServerError; retry abaixo cobre).
 _NETWORK_RETRYABLE = (APITimeoutError, APIConnectionError, RateLimitError)
 
+# Política §8 / D-014. São 3 TENTATIVAS (= 2 retries); o CLAUDE.md fala em
+# "3 retries" — divergência conhecida, comportamento mantido (Spec 008).
+MAX_LLM_ATTEMPTS = 3
+RETRY_WAIT_MIN_S = 1
+RETRY_WAIT_MAX_S = 8
+
 
 class GemmaClient:
     """Cliente assíncrono para o endpoint LIA UFMS (gemma-3-12b-it)."""
@@ -82,8 +88,8 @@ class GemmaClient:
     # ----- Helper: aplica tenacity sobre _call -----
     async def _call_with_retry(self, messages: list[Message], stream: bool, max_tokens: int | None):
         async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=1, max=8),
+            stop=stop_after_attempt(MAX_LLM_ATTEMPTS),
+            wait=wait_exponential(multiplier=1, min=RETRY_WAIT_MIN_S, max=RETRY_WAIT_MAX_S),
             retry=retry_if_exception_type(
                 (LLMTimeoutError, LLMServerError, RateLimitError)
             ),

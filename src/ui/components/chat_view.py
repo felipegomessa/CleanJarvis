@@ -194,18 +194,18 @@ class ChatView:
             )
 
         try:
-            async for event in state.agent.respond(
+            async for agent_event in state.agent.respond(
                 user_text, session_id=state.current_session_id
             ):
-                t = event.get("type")
+                event_type = agent_event.get("type")
                 with response_container:
-                    if t == "tool_call":
-                        pending_tool = event
-                    elif t == "tool_result":
-                        tool_events.append((pending_tool or {}, event))
+                    if event_type == "tool_call":
+                        pending_tool = agent_event
+                    elif event_type == "tool_result":
+                        tool_events.append((pending_tool or {}, agent_event))
                         pending_tool = None
-                    elif t == "final":
-                        reply = event.get("reply", "")
+                    elif event_type == "final":
+                        reply = agent_event.get("reply", "")
                         if response_md is None:
                             response_md = ui.markdown("").classes(
                                 "jarvis-md-chat"
@@ -219,8 +219,8 @@ class ChatView:
                             response_md.content = reply[:i]
                             await asyncio.sleep(0.012)
                         response_md.content = reply
-                    elif t == "error":
-                        ui.label(f"⚠ {event.get('message', '')}").style(
+                    elif event_type == "error":
+                        ui.label(f"⚠ {agent_event.get('message', '')}").style(
                             "color:#ff6b6b; font-size:13px"
                         )
                 await asyncio.sleep(0)

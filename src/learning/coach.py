@@ -17,6 +17,7 @@ from src.domain.learning import (
     TopicScore,
     topic_breakdown,
 )
+from src.domain.learning.models import DEFAULT_STUDY_MINUTES
 from src.llm.json_utils import parse_json_response
 from src.llm.types import Message
 from src.rag.retrieve import search
@@ -39,12 +40,14 @@ def _agenda_summary(conn: sqlite3.Connection, now: datetime) -> str:
     """Compromissos dos próximos dias (para o LLM achar tempo livre)."""
     horizon = now + timedelta(days=PLAN_HORIZON_DAYS)
     busy = []
-    for e in list_all_events(conn):
-        start = e.starts_at.replace(tzinfo=None)
+    for event in list_all_events(conn):
+        start = event.starts_at.replace(tzinfo=None)
         if now <= start <= horizon:
-            fim = f"-{e.ends_at:%H:%M}" if e.ends_at else ""
-            busy.append(f"- {start:%a %d/%m %H:%M}{fim} {e.title} ({e.kind})")
-    return "\n".join(busy) if busy else "(sem compromissos nos próximos 7 dias)"
+            fim = f"-{event.ends_at:%H:%M}" if event.ends_at else ""
+            busy.append(f"- {start:%a %d/%m %H:%M}{fim} {event.title} ({event.kind})")
+    if not busy:
+        return f"(sem compromissos nos próximos {PLAN_HORIZON_DAYS} dias)"
+    return "\n".join(busy)
 
 
 def build_coach_messages(
@@ -57,12 +60,12 @@ def build_coach_messages(
 ) -> list[Message]:
     """Mensagens para o LLM gerar um plano didático e agendado — função pura (testável)."""
     blocos = []
-    for s in weak:
-        ctx = contexts.get(s.topic, "")
+    for topic_score in weak:
+        topic_context = contexts.get(topic_score.topic, "")
         blocos.append(
-            f"- Tópico: {s.topic} (aproveitamento {s.ratio:.0%} — "
+            f"- Tópico: {topic_score.topic} (aproveitamento {topic_score.ratio:.0%} — "
             f"quanto menor, mais profundidade/tempo precisa)\n"
-            f"  Trechos do material:\n{ctx}"
+            f"  Trechos do material:\n{topic_context}"
         )
     corpo = "\n\n".join(blocos)
     system = (
@@ -95,17 +98,21 @@ def parse_coach_json(raw: str, weak: list[TopicScore]) -> tuple[list[str], Study
         parsed = parse_json_response(raw)
         recs = [str(x) for x in parsed.get("recommendations", []) if str(x).strip()]
         items: list[StudyPlanItem] = []
-        for it in parsed.get("plan", []):
-            if not isinstance(it, dict):
+        for plan_entry in parsed.get("plan", []):
+            if not isinstance(plan_entry, dict):
                 continue
             items.append(
                 StudyPlanItem(
-                    topic=str(it.get("topic", "")).strip() or "(geral)",
-                    action=str(it.get("action", "Revisar o tópico")).strip(),
-                    material=(str(it["material"]).strip() if it.get("material") else None),
-                    minutes=int(it.get("minutes", 30)),
-                    day=(str(it["day"]).strip() if it.get("day") else None),
-                    time=(str(it["time"]).strip() if it.get("time") else None),
+                    topic=str(plan_entry.get("topic", "")).strip() or "(geral)",
+                    action=str(plan_entry.get("action", "Revisar o tópico")).strip(),
+                    material=(
+                        str(plan_entry["material"]).strip()
+                        if plan_entry.get("material")
+                        else None
+                    ),
+                    minutes=int(plan_entry.get("minutes", DEFAULT_STUDY_MINUTES)),
+                    day=(str(plan_entry["day"]).strip() if plan_entry.get("day") else None),
+                    time=(str(plan_entry["time"]).strip() if plan_entry.get("time") else None),
                 )
             )
         if not items:
@@ -114,8 +121,12 @@ def parse_coach_json(raw: str, weak: list[TopicScore]) -> tuple[list[str], Study
     except (ValueError, TypeError) as e:
         logger.warning(f"plano do coach inválido ({e}); usando fallback genérico")
         items = [
-            StudyPlanItem(topic=s.topic, action=f"Revisar '{s.topic}' no material", minutes=30)
-            for s in weak
+            StudyPlanItem(
+                topic=topic_score.topic,
+                action=f"Revisar '{topic_score.topic}' no material",
+                minutes=DEFAULT_STUDY_MINUTES,
+            )
+            for topic_score in weak
         ]
         return [], StudyPlan(items=items)
 
@@ -144,15 +155,15 @@ async def build_difficulty_report(
 
     # Contexto do material por tópico fraco (RAG) para aterrar as ações.
     contexts: dict[str, str] = {}
-    for s in weak:
+    for topic_score in weak:
         try:
-            res = search(s.topic, top_k=2)
-            contexts[s.topic] = "\n".join(
-                f"[Doc {i}] {c.text[:500]}" for i, c in enumerate(res.chunks, start=1)
+            retrieval = search(topic_score.topic, top_k=2)
+            contexts[topic_score.topic] = "\n".join(
+                f"[Doc {i}] {c.text[:500]}" for i, c in enumerate(retrieval.chunks, start=1)
             )
         except Exception as e:
-            logger.warning(f"retrieval do coach falhou para '{s.topic}': {e}")
-            contexts[s.topic] = ""
+            logger.warning(f"retrieval do coach falhou para '{topic_score.topic}': {e}")
+            contexts[topic_score.topic] = ""
 
     now = datetime.now()
     agenda = _agenda_summary(conn, now)

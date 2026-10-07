@@ -11,6 +11,9 @@ from src.domain.agenda.repo import list_events
 
 DEFAULT_TZ = ZoneInfo("America/Campo_Grande")
 
+# Quão à frente `next_event` procura o próximo compromisso.
+NEXT_EVENT_WINDOW_DAYS = 30
+
 
 def _today_window(tz: ZoneInfo) -> tuple[datetime, datetime]:
     """Janela [hoje 00:00, amanhã 00:00) no fuso `tz`, retornado em UTC-naive."""
@@ -69,7 +72,6 @@ def next_event(
 ) -> Event | None:
     """Próximo evento a partir de agora (qualquer kind)."""
     now = datetime.now(tz)
-    # Janela ampla: agora ate 30 dias a frente.
-    end = now + timedelta(days=30)
+    end = now + timedelta(days=NEXT_EVENT_WINDOW_DAYS)
     evs = list_events(conn, now, end)
     return evs[0] if evs else None

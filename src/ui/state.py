@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 
 from src.llm import AgentLoop, GemmaClient
 
+# Quantos prompts recentes o histórico em memória guarda.
+PROMPT_HISTORY_LIMIT = 50
+
 
 @dataclass
 class AppState:
@@ -18,7 +21,7 @@ class AppState:
     # Sessão de chat atual (None = ainda não criada)
     current_session_id: int | None = None
 
-    # Histórico de prompts em memória (até 50, FIFO)
+    # Histórico de prompts em memória (até PROMPT_HISTORY_LIMIT, FIFO)
     prompt_history: list[str] = field(default_factory=list)
 
     # Sidebar colapsada (mini-mode 60px) ou expandida (260px)
@@ -45,14 +48,14 @@ def set_clients(gemma: GemmaClient, agent: AgentLoop, online: bool) -> None:
 
 
 def add_to_prompt_history(prompt: str) -> None:
-    """Insere no topo (mais recente primeiro), sem duplicatas, max 50."""
-    p = prompt.strip()
-    if not p:
+    """Insere no topo (mais recente primeiro), sem duplicatas, até PROMPT_HISTORY_LIMIT."""
+    normalized_prompt = prompt.strip()
+    if not normalized_prompt:
         return
-    if p in _state.prompt_history:
-        _state.prompt_history.remove(p)
-    _state.prompt_history.insert(0, p)
-    _state.prompt_history = _state.prompt_history[:50]
+    if normalized_prompt in _state.prompt_history:
+        _state.prompt_history.remove(normalized_prompt)
+    _state.prompt_history.insert(0, normalized_prompt)
+    _state.prompt_history = _state.prompt_history[:PROMPT_HISTORY_LIMIT]
 
 
 def register_sessions_changed(cb: Callable[[], None]) -> None:

@@ -148,26 +148,26 @@ def open_exam_dialog() -> None:
             with body:
                 ui.label(quiz.title).style("font-size:16px; font-weight:600")
                 ui.label("2. Responda as questões").style("color:#888; font-size:13px")
-                for i, q in enumerate(quiz.questions, start=1):
+                for i, question in enumerate(quiz.questions, start=1):
                     with ui.card().classes("w-full").style("background:#141414"):
-                        tag = "Múltipla escolha" if q.type == "mc" else "Dissertativa"
-                        ui.label(f"Q{i} · {tag} · {q.topic}").style(
+                        tag = "Múltipla escolha" if question.type == "mc" else "Dissertativa"
+                        ui.label(f"Q{i} · {tag} · {question.topic}").style(
                             "color:#7fd; font-size:11px"
                         )
-                        ui.label(q.prompt).style("font-weight:600")
-                        if q.type == "mc" and q.options:
-                            el = ui.radio(
-                                {j: opt for j, opt in enumerate(q.options)}
+                        ui.label(question.prompt).style("font-weight:600")
+                        if question.type == "mc" and question.options:
+                            answer_input = ui.radio(
+                                {j: opt for j, opt in enumerate(question.options)}
                             ).props("color=cyan")
                         else:
-                            el = ui.textarea("Sua resposta").classes("w-full")
-                        flow["inputs"].append((q, el))
+                            answer_input = ui.textarea("Sua resposta").classes("w-full")
+                        flow["inputs"].append((question, answer_input))
 
                 async def on_submit() -> None:
                     responses: dict[int, str] = {}
-                    for q, el in flow["inputs"]:
-                        val = el.value
-                        responses[q.id] = "" if val is None else str(val)
+                    for question, answer_input in flow["inputs"]:
+                        answer_value = answer_input.value
+                        responses[question.id] = "" if answer_value is None else str(answer_value)
                     body.clear()
                     with body:
                         ui.spinner(size="lg").classes("self-center")
@@ -190,7 +190,7 @@ def open_exam_dialog() -> None:
         # ---------- Passo 3: resultado ----------
         def render_results(attempt: Any) -> None:
             quiz: Quiz = flow["quiz"]
-            qmap: dict[int, Question] = {q.id: q for q in quiz.questions}
+            qmap: dict[int, Question] = {question.id: question for question in quiz.questions}
             body.clear()
             with body:
                 with ui.row().classes("items-center gap-3"):
@@ -206,8 +206,8 @@ def open_exam_dialog() -> None:
                     "font-size:15px; font-weight:600; padding-top:6px"
                 )
                 for i, ans in enumerate(attempt.answers, start=1):
-                    q = qmap.get(ans.question_id)
-                    if q is None:
+                    question = qmap.get(ans.question_id)
+                    if question is None:
                         continue
                     ok = ans.is_correct
                     border = (
@@ -216,16 +216,16 @@ def open_exam_dialog() -> None:
                     with ui.card().classes("w-full").style(
                         f"background:#141414; border-left:4px solid {border}"
                     ):
-                        ui.label(f"Q{i} · {q.topic}").style("color:#7fd; font-size:11px")
-                        ui.label(q.prompt).style("font-weight:600")
+                        ui.label(f"Q{i} · {question.topic}").style("color:#7fd; font-size:11px")
+                        ui.label(question.prompt).style("font-weight:600")
 
                         # Resposta DO ALUNO (MC: texto da alternativa marcada).
-                        if q.type == "mc" and q.options:
+                        if question.type == "mc" and question.options:
                             try:
                                 sel = int(ans.response)
                                 sua = (
-                                    q.options[sel]
-                                    if 0 <= sel < len(q.options)
+                                    question.options[sel]
+                                    if 0 <= sel < len(question.options)
                                     else "(inválida)"
                                 )
                             except (ValueError, TypeError):
@@ -239,15 +239,20 @@ def open_exam_dialog() -> None:
                             f"color:{cor_sua}; font-size:13px"
                         )
 
-                        if q.type == "mc" and q.options:
-                            certa = q.options[q.correct_index] if q.correct_index is not None else "?"
+                        if question.type == "mc" and question.options:
+                            certa = (
+                                question.options[question.correct_index]
+                                if question.correct_index is not None
+                                else "?"
+                            )
                             ui.label(f"Resposta correta: {certa}").style(
                                 "color:#9f9; font-size:12px"
                             )
                         pts = ans.awarded_points if ans.awarded_points is not None else 0
-                        rotulo = " (nota sugerida)" if q.type == "open" else ""
+                        rotulo = " (nota sugerida)" if question.type == "open" else ""
                         ui.label(
-                            f"Pontos: {pts:.2f}/{q.max_points:.0f}{rotulo} — {ans.feedback}"
+                            f"Pontos: {pts:.2f}/{question.max_points:.0f}{rotulo} — "
+                            f"{ans.feedback}"
                         ).style("color:#bbb; font-size:12px")
 
                 async def on_coach() -> None:
