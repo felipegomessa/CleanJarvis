@@ -435,6 +435,11 @@ Formato: [Architecture Decision Record (ADR)](https://adr.github.io/) simplifica
   - Versionado (rejeitada: overkill).
 - **Conseqüências**: Idempotência total. Re-uploads não custam embeddings se
   o conteúdo não mudou.
+- **Revisão (2026-10-06, Spec 008 / RF-008.3)**: a remoção do documento antigo
+  passou a ocorrer **dentro da mesma transação** que insere o novo, e só depois de
+  extração, validação de texto e embedding terem dado certo. Antes, o DELETE
+  rodava em autocommit antes da extração: uma falha posterior perdia o documento
+  antigo. Como `documents.source_path` é `UNIQUE`, o DELETE precede o INSERT.
 
 ---
 
@@ -777,6 +782,25 @@ Formato: [Architecture Decision Record (ADR)](https://adr.github.io/) simplifica
   `pytest` **162 passed / 3 skipped**, `ruff` limpo.
 - **Relacionada a**: [D-007](#d-007), [D-013](#d-013), [D-019](#d-019),
   [D-022](#d-022), [D-029](#d-029).
+
+---
+
+## D-031 — Dependências de desenvolvimento em `[dependency-groups]` (PEP 735)
+
+- **Data**: 2026-10-06.
+- **Contexto**: ruff/pytest/mypy estavam em `[project.optional-dependencies] dev`.
+  O `uv sync` (comando de setup do CLAUDE.md, P7) não instala extras opcionais, então
+  uma venv nova ficava sem ruff e sem pytest — o guia de estilo não era verificável
+  sem lembrar de `--extra dev` (achado da revisão clean code, Spec 008).
+- **Decisão**: mover o grupo para `[dependency-groups] dev`. O uv instala o grupo
+  `dev` por padrão no `uv sync`. `uv.lock` regenerado.
+- **Razão**: P7 (reprodutibilidade) e padronização de estilo verificada por
+  ferramenta (cap. 2, *Engenharia de Software Moderna*).
+- **Alternativas consideradas**: documentar `uv sync --extra dev` (rejeitada:
+  depende de quem lê lembrar a flag).
+- **Consequências**: README e STATUS passam a instruir só `uv sync`. Para uma
+  instalação só de runtime: `uv sync --no-dev`.
+- **Relacionada a**: [D-011](#d-011), [D-019](#d-019).
 
 ---
 

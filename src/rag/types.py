@@ -38,4 +38,4 @@ class RetrievedChunk(BaseModel):
 class RetrievalResult(BaseModel):
     chunks: list[RetrievedChunk] = Field(default_factory=list)
     no_relevant_context: bool = False
-    threshold_used: float = 0.6
+    threshold_used: float | None = None  # preenchido por retrieve.search

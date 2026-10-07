@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pdfplumber
 from loguru import logger
 
@@ -14,7 +16,7 @@ from src.core.config import get_settings
 from src.core.db import get_connection
 from src.rag.chunk import chunk_text
 from src.rag.embed import embed_passages
-from src.rag.types import IngestResult
+from src.rag.types import Chunk, IngestResult
 
 SUPPORTED_EXT = {".pdf", ".txt", ".md"}
 
@@ -98,173 +100,185 @@ def _delete_document(conn: sqlite3.Connection, doc_id: int) -> None:
     # chunks sao removidos via ON DELETE CASCADE da FK
 
 
+@dataclass
+class PreparedContent:
+    """Texto, chunks e embeddings de um documento, prontos para gravar."""
+
+    text: str
+    chunks: list[Chunk]
+    embeddings: np.ndarray
+
+
+def _error(source_path: str, reason: str, error: str) -> IngestResult:
+    return IngestResult(status="error", source_path=source_path, reason=reason, error=error)
+
+
+def _validate_input_file(path: Path) -> IngestResult | None:
+    """Erro se a extensão não é suportada ou o caminho não é um arquivo regular."""
+    if path.suffix.lower() not in SUPPORTED_EXT:
+        return _error(str(path), "unsupported_type", f"extensão {path.suffix} não suportada")
+    if not path.exists() or not path.is_file():
+        return _error(
+            str(path), "not_a_file", "arquivo não encontrado ou não é arquivo regular"
+        )
+    return None
+
+
+def _find_document_by_hash(conn: sqlite3.Connection, content_hash: str) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM documents WHERE content_hash = ?", (content_hash,)
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _find_document_by_path(conn: sqlite3.Connection, source_path: str) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM documents WHERE source_path = ?", (source_path,)
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _prepare_content(path: Path) -> PreparedContent | IngestResult:
+    """Extrai, valida, chunkifica e embedda. Não toca no banco."""
+    source_path = str(path)
+    try:
+        text = _extract_text(path)
+    except Exception as e:
+        # pdfplumber/pdfminer levantam tipos variados para PDF corrompido (§8: skip + log).
+        logger.exception(f"falha ao extrair texto de {path}")
+        return _error(source_path, "extract_failed", str(e))
+    if not text.strip():
+        return _error(source_path, "no_text", "texto extraído está vazio (PDF scaneado?)")
+
+    # Valida a QUALIDADE do texto extraído (CLAUDE.md §8). PDFs cujas fontes não
+    # têm mapa de caracteres extraem só lixo `(cid:N)`/controle — que não é vazio,
+    # mas envenena o índice se for embeddado. Recusamos aqui.
+    ratio = real_word_ratio(text)
+    if ratio < MIN_REAL_WORD_RATIO:
+        logger.warning(
+            f"texto ilegível em {path.name} "
+            f"(palavras reais={ratio:.0%} < {MIN_REAL_WORD_RATIO:.0%}); "
+            "PDF sem texto extraível (fonte sem mapa de caracteres?) — pulado. "
+            "Use OCR ou substitua por uma cópia com texto selecionável."
+        )
+        return _error(
+            source_path,
+            "unreadable_text",
+            f"texto extraído ilegível ({ratio:.0%} de palavras reais); "
+            "PDF sem texto selecionável — necessita OCR ou cópia limpa",
+        )
+
+    settings = get_settings()
+    chunks = chunk_text(text, settings.chunk_size, settings.chunk_overlap)
+    if not chunks:
+        return _error(source_path, "no_chunks", "chunking produziu lista vazia")
+
+    try:
+        embeddings = embed_passages([chunk.text for chunk in chunks])
+    except Exception as e:
+        # Falha do modelo de embeddings (download, memória...) vira erro do arquivo.
+        logger.exception(f"falha ao gerar embeddings de {path}")
+        return _error(source_path, "embed_failed", str(e))
+    return PreparedContent(text=text, chunks=chunks, embeddings=embeddings)
+
+
+def _persist(
+    conn: sqlite3.Connection,
+    path: Path,
+    content_hash: str,
+    content: PreparedContent,
+    previous_id: int | None,
+) -> IngestResult:
+    """Grava documento + chunks + vetores numa transação, substituindo a versão anterior.
+
+    O DELETE da versão anterior fica DENTRO da transação (D-021, revisão Spec 008):
+    se qualquer INSERT falhar, o ROLLBACK devolve o documento antigo intacto.
+    """
+    source_path = str(path)
+    try:
+        conn.execute("BEGIN")
+        if previous_id is not None:
+            logger.info(f"re-ingerindo {path.name} (conteúdo mudou)")
+            _delete_document(conn, previous_id)
+        document_cursor = conn.execute(
+            """INSERT INTO documents
+                   (title, source_path, type, char_count, chunk_count, content_hash)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                path.stem,
+                source_path,
+                path.suffix.lower().lstrip("."),
+                len(content.text),
+                len(content.chunks),
+                content_hash,
+            ),
+        )
+        document_id = int(document_cursor.lastrowid or 0)
+        for chunk, embedding in zip(content.chunks, content.embeddings, strict=True):
+            chunk_cursor = conn.execute(
+                """INSERT INTO chunks
+                       (document_id, position, text, char_start, char_end)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (document_id, chunk.position, chunk.text, chunk.char_start, chunk.char_end),
+            )
+            conn.execute(
+                "INSERT INTO chunk_vecs (chunk_id, embedding) VALUES (?, ?)",
+                (int(chunk_cursor.lastrowid or 0), embedding.tobytes()),
+            )
+        conn.execute("COMMIT")
+    except Exception as e:
+        # Qualquer falha de SQLite/sqlite-vec desfaz tudo, inclusive o DELETE.
+        conn.execute("ROLLBACK")
+        logger.exception(f"falha ao inserir {path}")
+        return _error(source_path, "db_insert_failed", str(e))
+
+    logger.info(
+        f"ingerido: {path.name} (doc_id={document_id}, {len(content.chunks)} chunks, "
+        f"{len(content.text)} chars)"
+    )
+    return IngestResult(
+        status="ingested",
+        source_path=source_path,
+        document_id=document_id,
+        chunk_count=len(content.chunks),
+    )
+
+
 def ingest_document(path: Path) -> IngestResult:
     """Ingere 1 documento. Idempotente via SHA-256 (D-021).
 
     - mesmo hash existente -> 'skipped' (no-op)
-    - mesmo path com hash diferente -> deleta antigo, re-ingere
+    - mesmo path com hash diferente -> substitui o antigo na mesma transação
     - novo -> insere
 
     Returns: IngestResult com status e detalhes.
     """
-    spath = str(path)
-
-    if path.suffix.lower() not in SUPPORTED_EXT:
-        return IngestResult(
-            status="error",
-            source_path=spath,
-            reason="unsupported_type",
-            error=f"extensão {path.suffix} não suportada",
-        )
-
-    if not path.exists() or not path.is_file():
-        return IngestResult(
-            status="error",
-            source_path=spath,
-            reason="not_a_file",
-            error="arquivo não encontrado ou não é arquivo regular",
-        )
+    source_path = str(path)
+    invalid = _validate_input_file(path)
+    if invalid is not None:
+        return invalid
 
     try:
         content_hash = _compute_sha256(path)
     except OSError as e:
-        return IngestResult(
-            status="error",
-            source_path=spath,
-            reason="read_failed",
-            error=str(e),
-        )
-
-    settings = get_settings()
+        return _error(source_path, "read_failed", str(e))
 
     with get_connection() as conn:
-        # 1) Dedupe por hash
-        row = conn.execute(
-            "SELECT id FROM documents WHERE content_hash = ?", (content_hash,)
-        ).fetchone()
-        if row:
-            logger.debug(f"skip: {path.name} (hash ja indexado, doc_id={row['id']})")
+        existing_id = _find_document_by_hash(conn, content_hash)
+        if existing_id is not None:
+            logger.debug(f"skip: {path.name} (hash ja indexado, doc_id={existing_id})")
             return IngestResult(
                 status="skipped",
-                source_path=spath,
+                source_path=source_path,
                 reason="hash_match",
-                document_id=int(row["id"]),
+                document_id=existing_id,
             )
+        previous_id = _find_document_by_path(conn, source_path)
 
-        # 2) Mesmo path com hash diferente -> re-ingestao
-        row = conn.execute(
-            "SELECT id FROM documents WHERE source_path = ?", (spath,)
-        ).fetchone()
-        if row:
-            logger.info(f"re-ingerindo {path.name} (conteúdo mudou)")
-            _delete_document(conn, int(row["id"]))
-
-        # 3) Extrai texto
-        try:
-            text = _extract_text(path)
-        except Exception as e:
-            logger.exception(f"falha ao extrair texto de {path}")
-            return IngestResult(
-                status="error",
-                source_path=spath,
-                reason="extract_failed",
-                error=str(e),
-            )
-        if not text.strip():
-            return IngestResult(
-                status="error",
-                source_path=spath,
-                reason="no_text",
-                error="texto extraído está vazio (PDF scaneado?)",
-            )
-
-        # 3b) Valida a QUALIDADE do texto extraído (CLAUDE.md §8). PDFs cujas fontes
-        #     não têm mapa de caracteres extraem só lixo `(cid:N)`/controle — que
-        #     não é vazio, mas envenena o índice se for embeddado. Recusamos aqui.
-        ratio = real_word_ratio(text)
-        if ratio < MIN_REAL_WORD_RATIO:
-            logger.warning(
-                f"texto ilegível em {path.name} "
-                f"(palavras reais={ratio:.0%} < {MIN_REAL_WORD_RATIO:.0%}); "
-                "PDF sem texto extraível (fonte sem mapa de caracteres?) — pulado. "
-                "Use OCR ou substitua por uma cópia com texto selecionável."
-            )
-            return IngestResult(
-                status="error",
-                source_path=spath,
-                reason="unreadable_text",
-                error=(
-                    f"texto extraído ilegível ({ratio:.0%} de palavras reais); "
-                    "PDF sem texto selecionável — necessita OCR ou cópia limpa"
-                ),
-            )
-
-        # 4) Chunkifica
-        chunks = chunk_text(text, settings.chunk_size, settings.chunk_overlap)
-        if not chunks:
-            return IngestResult(
-                status="error",
-                source_path=spath,
-                reason="no_chunks",
-                error="chunking produziu lista vazia",
-            )
-
-        # 5) Gera embeddings
-        try:
-            embeddings = embed_passages([c.text for c in chunks])
-        except Exception as e:
-            logger.exception(f"falha ao gerar embeddings de {path}")
-            return IngestResult(
-                status="error",
-                source_path=spath,
-                reason="embed_failed",
-                error=str(e),
-            )
-
-        # 6) Persiste em transacao
-        ext = path.suffix.lower().lstrip(".")
-        try:
-            conn.execute("BEGIN")
-            cur = conn.execute(
-                """INSERT INTO documents
-                       (title, source_path, type, char_count, chunk_count, content_hash)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (path.stem, spath, ext, len(text), len(chunks), content_hash),
-            )
-            doc_id = int(cur.lastrowid or 0)
-            for c, emb in zip(chunks, embeddings, strict=True):
-                cur2 = conn.execute(
-                    """INSERT INTO chunks
-                           (document_id, position, text, char_start, char_end)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (doc_id, c.position, c.text, c.char_start, c.char_end),
-                )
-                chunk_id = int(cur2.lastrowid or 0)
-                conn.execute(
-                    "INSERT INTO chunk_vecs (chunk_id, embedding) VALUES (?, ?)",
-                    (chunk_id, emb.tobytes()),
-                )
-            conn.execute("COMMIT")
-        except Exception as e:
-            conn.execute("ROLLBACK")
-            logger.exception(f"falha ao inserir {path}")
-            return IngestResult(
-                status="error",
-                source_path=spath,
-                reason="db_insert_failed",
-                error=str(e),
-            )
-
-    logger.info(
-        f"ingerido: {path.name} (doc_id={doc_id}, {len(chunks)} chunks, "
-        f"{len(text)} chars)"
-    )
-    return IngestResult(
-        status="ingested",
-        source_path=spath,
-        document_id=doc_id,
-        chunk_count=len(chunks),
-    )
+        prepared = _prepare_content(path)
+        if isinstance(prepared, IngestResult):
+            return prepared  # versão anterior (se houver) continua intacta
+        return _persist(conn, path, content_hash, prepared, previous_id)
 
 
 def ingest_directory(dir_path: Path, recursive: bool = False) -> list[IngestResult]:

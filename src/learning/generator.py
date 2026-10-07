@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from src.core.config import get_settings
 from src.core.db import get_connection
 from src.domain.learning import Question, Quiz, add_questions, create_quiz, get_quiz
+from src.domain.learning.models import MIN_MC_OPTIONS
 from src.learning.errors import LearningError
 from src.llm.json_utils import parse_json_response
 from src.llm.types import Message
@@ -23,17 +24,17 @@ def _collect_refs(document_ids: list[int], max_per_doc: int) -> tuple[list[tuple
     """Lê os chunks (cota por documento) e os rotula globalmente como T1, T2, ..."""
     refs: list[tuple[str, RetrievedChunk]] = []
     ref_map: RefMap = {}
-    n = 0
+    ref_counter = 0
     for doc_id in document_ids:
         chunks = get_document_chunks(doc_id, limit=max_per_doc)
         if not chunks:
             logger.warning(f"documento {doc_id} sem chunks legíveis — ignorado na prova")
             continue
-        for ch in chunks:
-            n += 1
-            ref = f"T{n}"
-            refs.append((ref, ch))
-            ref_map[ref] = ch
+        for chunk in chunks:
+            ref_counter += 1
+            ref = f"T{ref_counter}"
+            refs.append((ref, chunk))
+            ref_map[ref] = chunk
     return refs, ref_map
 
 
@@ -72,7 +73,8 @@ def build_generation_messages(
         '  {"type":"open","topic":"<tópico curto>","prompt":"<enunciado>",'
         '"answer_key":"<pontos esperados na resposta>","source":"T2"}\n'
         "]}\n"
-        "Regras: questões 'mc' têm preferencialmente 4 alternativas (mínimo 2) e 1 "
+        "Regras: questões 'mc' têm preferencialmente 4 alternativas "
+        f"(mínimo {MIN_MC_OPTIONS}) e 1 "
         "correta — 'correct_index' é o índice da correta (começa em 0). "
         "Questões 'open' têm 'answer_key' com os pontos "
         "esperados. Cada questão indica em 'source' o trecho de origem (ex.: 'T3'). "
@@ -91,12 +93,12 @@ def build_generation_messages(
 
 def _normalize_ref(raw: object) -> str:
     """Normaliza 'T3' / '[T3]' / '3' / 't3' para a forma canônica 'T3'."""
-    s = re.sub(r"[^0-9A-Za-z]", "", str(raw)).upper()
-    if s.isdigit():
-        s = "T" + s
-    elif not s.startswith("T"):
-        s = "T" + re.sub(r"\D", "", s)
-    return s
+    normalized = re.sub(r"[^0-9A-Za-z]", "", str(raw)).upper()
+    if normalized.isdigit():
+        normalized = "T" + normalized
+    elif not normalized.startswith("T"):
+        normalized = "T" + re.sub(r"\D", "", normalized)
+    return normalized
 
 
 def parse_quiz_questions(raw: str, ref_map: RefMap) -> list[Question]:
@@ -142,9 +144,9 @@ def parse_quiz_questions(raw: str, ref_map: RefMap) -> list[Question]:
 
 
 def _split_by_type(questions: list[Question]) -> tuple[list[Question], list[Question]]:
-    mc = [q for q in questions if q.type == "mc"]
-    op = [q for q in questions if q.type == "open"]
-    return mc, op
+    mc_questions = [q for q in questions if q.type == "mc"]
+    open_questions = [q for q in questions if q.type == "open"]
+    return mc_questions, open_questions
 
 
 async def generate_quiz(
@@ -177,13 +179,16 @@ async def generate_quiz(
     raw = await gemma.complete_chat(messages)
 
     # Avalia a 1a resposta: pode vir com JSON malformado OU com poucas questões.
-    mc: list[Question] = []
-    op: list[Question] = []
+    mc_questions: list[Question] = []
+    open_questions: list[Question] = []
     problema = ""
     try:
-        mc, op = _split_by_type(parse_quiz_questions(raw, ref_map))
-        if len(mc) < num_mc or len(op) < num_open:
-            problema = f"faltaram questões (mc={len(mc)}/{num_mc}, open={len(op)}/{num_open})"
+        mc_questions, open_questions = _split_by_type(parse_quiz_questions(raw, ref_map))
+        if len(mc_questions) < num_mc or len(open_questions) < num_open:
+            problema = (
+                f"faltaram questões (mc={len(mc_questions)}/{num_mc}, "
+                f"open={len(open_questions)}/{num_open})"
+            )
     except LearningError as e:
         problema = f"JSON inválido ({e})"
 
@@ -206,15 +211,16 @@ async def generate_quiz(
             },
         ]
         raw = await gemma.complete_chat(repair)
-        mc, op = _split_by_type(parse_quiz_questions(raw, ref_map))
+        mc_questions, open_questions = _split_by_type(parse_quiz_questions(raw, ref_map))
 
-    if len(mc) < num_mc or len(op) < num_open:
+    if len(mc_questions) < num_mc or len(open_questions) < num_open:
         raise LearningError(
             f"não foi possível gerar a prova solicitada "
-            f"(obtido mc={len(mc)}/{num_mc}, open={len(op)}/{num_open})"
+            f"(obtido mc={len(mc_questions)}/{num_mc}, "
+            f"open={len(open_questions)}/{num_open})"
         )
 
-    final = mc[:num_mc] + op[:num_open]
+    final = mc_questions[:num_mc] + open_questions[:num_open]
     quiz_title = title or "Prova gerada dos materiais"
 
     with get_connection() as conn:

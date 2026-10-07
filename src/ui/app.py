@@ -24,6 +24,9 @@ from src.ui.dialogs.tasks_list_dialog import open_tasks_list_dialog
 from src.ui.state import set_clients
 from src.ui.theme import apply_theme
 
+# O endpoint LIA pode demorar a acordar; acima disso a UI sobe em modo OFFLINE (D-017).
+STARTUP_HEALTHCHECK_TIMEOUT_S = 15.0
+
 
 async def _bootstrap() -> None:
     settings = get_settings()
@@ -32,12 +35,12 @@ async def _bootstrap() -> None:
 
     with get_connection() as conn:
         smoke_check_vec(conn)
-        v = apply_migrations(conn)
-        logger.info(f"DB schema v{v}")
+        schema_version = apply_migrations(conn)
+        logger.info(f"DB schema v{schema_version}")
 
     gemma = GemmaClient(settings)
     set_default_client(gemma)  # disponibiliza o client p/ camadas fora da UI (D-030)
-    ok = await gemma.healthcheck(timeout_s=15.0)
+    ok = await gemma.healthcheck(timeout_s=STARTUP_HEALTHCHECK_TIMEOUT_S)
     set_health("ONLINE" if ok else "OFFLINE", error=None if ok else "healthcheck=False")
     if ok:
         logger.info("LLM ONLINE")

@@ -18,6 +18,7 @@ from src.core.db import apply_migrations, get_connection
 from src.llm.agent import AgentLoop
 from src.llm.types import Message
 from src.tools import build_system_prompt, get_registry
+from src.tools.registry import ToolDefinition, ToolRegistry
 
 
 class ScriptedLLM:
@@ -227,3 +228,62 @@ async def test_loop_does_not_persist_without_session_id(shared_db: Path) -> None
     with get_connection() as conn:
         sessions = list_recent_sessions(conn, limit=10)
     assert sessions == []
+
+
+# ============================================================
+# Spec 008 / RF-008.1 — saída de tool não serializável
+# ============================================================
+
+
+def _registry_with_fake_tools() -> ToolRegistry:
+    """Registry com uma tool OK e uma cuja saída tem referência circular."""
+    async def _ok_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"valor": "saida-da-tool-ok"}
+
+    async def _circular_tool(args: dict[str, Any]) -> dict[str, Any]:
+        output: dict[str, Any] = {"status": "ok"}
+        output["self"] = output  # json.dumps levanta ValueError (circular)
+        return output
+
+    registry = ToolRegistry()
+    for name, handler in (("tool_ok", _ok_tool), ("tool_circular", _circular_tool)):
+        registry.register(
+            ToolDefinition(
+                name=name, description=name, parameters_schema={}, handler=handler
+            )
+        )
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_loop_unserializable_output_first_tool(shared_db: Path) -> None:
+    llm = ScriptedLLM(['{"tool": "tool_circular", "args": {}}', '{"reply": "fim"}'])
+    loop = AgentLoop(gemma=llm, registry=_registry_with_fake_tools(), max_iterations=4)  # type: ignore[arg-type]
+
+    events = [ev async for ev in loop.respond("teste")]
+
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results[0]["status"] == "error"
+    assert "não serializável" in results[0]["output"]["error"]
+    assert events[-1] == {"type": "final", "reply": "fim"}
+    with get_connection() as conn:
+        rows = conn.execute("SELECT tool_name, status FROM tool_call_logs").fetchall()
+    assert [(r["tool_name"], r["status"]) for r in rows] == [("tool_circular", "error")]
+
+
+@pytest.mark.asyncio
+async def test_loop_unserializable_output_does_not_reuse_previous(shared_db: Path) -> None:
+    llm = ScriptedLLM([
+        '{"tool": "tool_ok", "args": {}}',
+        '{"tool": "tool_circular", "args": {}}',
+        '{"reply": "fim"}',
+    ])
+    loop = AgentLoop(gemma=llm, registry=_registry_with_fake_tools(), max_iterations=5)  # type: ignore[arg-type]
+
+    _ = [ev async for ev in loop.respond("teste")]
+
+    # A 3ª chamada à LLM recebe como última mensagem a observação da tool_circular.
+    last_observation = llm.calls[2][-1]["content"]
+    assert "tool_circular" in last_observation
+    assert "não serializável" in last_observation
+    assert "saida-da-tool-ok" not in last_observation

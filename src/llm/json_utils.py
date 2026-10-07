@@ -17,6 +17,10 @@ from typing import Any
 # preferimos preservá-los como '\beta'/'\frac' a virar caracteres de controle.
 _INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/nrtu])')
 
+# Envelope markdown que o LLM às vezes coloca em volta do JSON: ```json ... ```
+CODE_FENCE = "```"
+JSON_LANG_TAG = "json"
+
 
 def loads_lenient(s: str) -> dict[str, Any]:
     """json.loads tolerante a barras invertidas cruas de LaTeX (\\sigma, \\frac).
@@ -32,35 +36,40 @@ def loads_lenient(s: str) -> dict[str, Any]:
         return json.loads(repaired)
 
 
+def _try_loads(text: str) -> dict[str, Any] | None:
+    """loads_lenient que devolve None em vez de levantar — 1ª tentativa, antes do recorte."""
+    try:
+        return loads_lenient(text)
+    except json.JSONDecodeError:
+        return None
+
+
 def parse_json_response(text: str) -> dict[str, Any]:
     """Extrai JSON da resposta do LLM. Tolera envelopes ```json ... ``` ou texto pré/pós."""
     text = text.strip()
     if not text:
         raise ValueError("resposta vazia")
 
-    # Strip code fences se houver
-    if text.startswith("```"):
+    if text.startswith(CODE_FENCE):
         # remove primeira linha de fence
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.rstrip().endswith("```"):
-            text = text.rstrip()[:-3]
+        text = text.split("\n", 1)[1] if "\n" in text else text[len(CODE_FENCE) :]
+        if text.rstrip().endswith(CODE_FENCE):
+            text = text.rstrip()[: -len(CODE_FENCE)]
         text = text.strip()
-        if text.startswith("json"):
-            text = text[4:].lstrip()
+        if text.startswith(JSON_LANG_TAG):
+            text = text[len(JSON_LANG_TAG) :].lstrip()
 
-    # Tenta direto
-    try:
-        return loads_lenient(text)
-    except json.JSONDecodeError:
-        pass
+    parsed = _try_loads(text)
+    if parsed is not None:
+        return parsed
 
     # Procura primeiro { até último }
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
-        sub = text[start : end + 1]
+        json_candidate = text[start : end + 1]
         try:
-            return loads_lenient(sub)
+            return loads_lenient(json_candidate)
         except json.JSONDecodeError as e:
             raise ValueError(f"JSON inválido após extração: {e}") from e
 

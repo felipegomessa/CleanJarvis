@@ -8,6 +8,14 @@ from pydantic import BaseModel, model_validator
 
 QuestionType = Literal["mc", "open"]
 
+# 4 alternativas é o alvo, mas aceitamos de 2 a 6 para não descartar questões
+# boas quando a LLM varia o número de opções (robustez com LLM real).
+MIN_MC_OPTIONS = 2
+MAX_MC_OPTIONS = 6
+
+# Duração padrão de um bloco de estudo no plano gerado.
+DEFAULT_STUDY_MINUTES = 30
+
 
 class Question(BaseModel):
     """Uma questão de prova. MC exige `options`+`correct_index`; open exige `answer_key`."""
@@ -26,10 +34,12 @@ class Question(BaseModel):
     @model_validator(mode="after")
     def _check_by_type(self) -> Question:
         if self.type == "mc":
-            # 4 alternativas é o alvo, mas aceitamos 2 a 6 para não descartar questões
-            # boas quando a LLM varia o número de opções (robustez com LLM real).
-            if not self.options or not (2 <= len(self.options) <= 6):
-                raise ValueError("questão MC exige entre 2 e 6 alternativas")
+            if not self.options or not (
+                MIN_MC_OPTIONS <= len(self.options) <= MAX_MC_OPTIONS
+            ):
+                raise ValueError(
+                    f"questão MC exige entre {MIN_MC_OPTIONS} e {MAX_MC_OPTIONS} alternativas"
+                )
             if self.correct_index is None or not (
                 0 <= self.correct_index < len(self.options)
             ):
@@ -84,7 +94,7 @@ class StudyPlanItem(BaseModel):
     topic: str
     action: str
     material: str | None = None           # documento/seção citada
-    minutes: int = 30
+    minutes: int = DEFAULT_STUDY_MINUTES
     day: str | None = None                # data sugerida (YYYY-MM-DD), encaixada na agenda
     time: str | None = None               # horário sugerido (HH:MM)
 

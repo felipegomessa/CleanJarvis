@@ -1,7 +1,21 @@
 # STATUS — JARVIS Acadêmico (Onde Paramos)
 
-> **Atualizado em**: 2026-06-13
+> **Atualizado em**: 2026-10-06
 > **Versão da UI**: 2.0 — ChatGPT-style dark + Calendário unificado estilo Google Calendar.
+
+## 🧹 ONDE PARAMOS (2026-10-06) — Spec 008 (Refatoração Clean Code)
+
+**Spec 008 implementada** (cap. 2 "Código Limpo", *Engenharia de Software Moderna*):
+- **Bug corrigido** no agent loop: saída de tool não serializável causava
+  `NameError` (1ª tool) ou reenviava à LLM a saída da tool anterior. Agora vira
+  `status="error"` coerente em evento/log/sessão/observação.
+- **Re-ingestão transacional** (nota em D-021): falha de extração/embedding/INSERT
+  não apaga mais o documento antigo.
+- `AgentLoop.respond` 190 → 38 linhas; `ingest_document` 167 → 27 linhas.
+- Exceções específicas (`audit_dialog`, `json_utils`), constantes nomeadas no lugar
+  de números mágicos, nomes locais claros.
+- **D-031**: dev deps em `[dependency-groups]` — `uv sync` já instala ruff/pytest/mypy.
+- `pytest` **185 passed / 3 skipped** (+18 testes), `ruff` limpo.
 
 ## 🆕 ONDE PARAMOS (2026-06-13) — Spec 007 (Aprendizado / Trabalho 2)
 
@@ -195,7 +209,7 @@ unificadas via chat.
 ```powershell
 # Setup (uma vez):
 python -m pip install --user uv
-python -m uv sync --extra dev
+python -m uv sync
 copy .env.example .env
 # preencher JARVIS_LLM_API_KEY no .env
 
@@ -232,7 +246,7 @@ copy .env.example .env
 
 1. Ler [`CLAUDE.md`](CLAUDE.md) (constituição) + [`decisions.md`](decisions.md) (ADRs).
 2. Ler este `STATUS.md`.
-3. `uv sync --extra dev` para garantir ambiente.
+3. `uv sync` para garantir ambiente (inclui o grupo dev — D-031).
 4. `pytest -q` para baseline verde.
 5. `.venv\Scripts\python.exe -m src.main` → http://127.0.0.1:8080.
 

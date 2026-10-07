@@ -32,30 +32,28 @@ def _resolve_document_ids(conn: sqlite3.Connection, documentos: list[Any]) -> li
     """Resolve uma lista de ids/títulos para document_ids existentes."""
     rows = conn.execute("SELECT id, title FROM documents").fetchall()
     by_id = {int(r["id"]): str(r["title"]) for r in rows}
-    out: list[int] = []
-    for d in documentos:
-        if isinstance(d, int) or (isinstance(d, str) and d.isdigit()):
-            did = int(d)
-            if did in by_id:
-                out.append(did)
+    resolved_ids: list[int] = []
+    for reference in documentos:
+        if isinstance(reference, int) or (isinstance(reference, str) and reference.isdigit()):
+            document_id = int(reference)
+            if document_id in by_id:
+                resolved_ids.append(document_id)
             continue
-        alvo = _norm(str(d))
-        match = [i for i, t in by_id.items() if alvo == _norm(t)] or [
-            i for i, t in by_id.items() if alvo in _norm(t)
+        target_title = _norm(str(reference))
+        match = [i for i, t in by_id.items() if target_title == _norm(t)] or [
+            i for i, t in by_id.items() if target_title in _norm(t)
         ]
-        out.extend(match[:1])
-    # dedup preservando ordem
-    seen: set[int] = set()
-    return [i for i in out if not (i in seen or seen.add(i))]
+        resolved_ids.extend(match[:1])
+    return list(dict.fromkeys(resolved_ids))  # dedup preservando ordem
 
 
 async def _gerar_prova(args: dict[str, Any]) -> dict[str, Any]:
-    s = get_settings()
+    settings = get_settings()
     documentos = args.get("documentos") or args.get("documento") or []
     if isinstance(documentos, (str, int)):
         documentos = [documentos]
-    num_mc = int(args.get("num_mc", s.quiz_default_mc))
-    num_open = int(args.get("num_dissertativas", s.quiz_default_open))
+    num_mc = int(args.get("num_mc", settings.quiz_default_mc))
+    num_open = int(args.get("num_dissertativas", settings.quiz_default_open))
     idioma = "original" if _norm(str(args.get("idioma", "pt"))).startswith(
         ("orig", "ingl", "english")
     ) else "pt"
@@ -147,22 +145,28 @@ def _report_to_dict(report: Any) -> dict[str, Any]:
 
 
 async def _identificar_dificuldades(args: dict[str, Any]) -> dict[str, Any]:
-    aid = args.get("attempt_id")
-    report = await difficulty_report(int(aid) if aid is not None else None)
+    attempt_id = args.get("attempt_id")
+    report = await difficulty_report(int(attempt_id) if attempt_id is not None else None)
     if report is None:
         return {"mensagem": "nenhuma prova concluída ainda — faça uma prova primeiro."}
-    d = _report_to_dict(report)
-    return {"positivo": d["positivo"], "topicos_fracos": d["topicos_fracos"],
-            "recomendacoes": d["recomendacoes"]}
+    report_dict = _report_to_dict(report)
+    return {
+        "positivo": report_dict["positivo"],
+        "topicos_fracos": report_dict["topicos_fracos"],
+        "recomendacoes": report_dict["recomendacoes"],
+    }
 
 
 async def _montar_plano_estudos(args: dict[str, Any]) -> dict[str, Any]:
-    aid = args.get("attempt_id")
-    report = await difficulty_report(int(aid) if aid is not None else None)
+    attempt_id = args.get("attempt_id")
+    report = await difficulty_report(int(attempt_id) if attempt_id is not None else None)
     if report is None:
         return {"mensagem": "nenhuma prova concluída ainda — faça uma prova primeiro."}
-    d = _report_to_dict(report)
-    return {"plano_estudos": d["plano_estudos"], "recomendacoes": d["recomendacoes"]}
+    report_dict = _report_to_dict(report)
+    return {
+        "plano_estudos": report_dict["plano_estudos"],
+        "recomendacoes": report_dict["recomendacoes"],
+    }
 
 
 async def _ler_documento(args: dict[str, Any]) -> dict[str, Any]:

@@ -9,6 +9,14 @@ from nicegui import ui
 from src.core.db import get_connection
 
 
+def _pretty_json(raw: str) -> str:
+    """Indenta JSON para exibição; devolve o texto bruto se não for JSON válido."""
+    try:
+        return json.dumps(json.loads(raw), ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
 def open_audit_dialog() -> None:
     with ui.dialog().props("persistent maximized=false") as dialog, ui.card().classes(
         "w-full max-w-5xl"
@@ -67,27 +75,17 @@ def open_audit_dialog() -> None:
                     ):
                         with ui.column().classes("gap-1 text-xs px-2"):
                             ui.label("Entrada:").style("color:#aaa; font-weight:600")
-                            try:
-                                pretty_in = json.dumps(
-                                    json.loads(r["input_json"]),
-                                    ensure_ascii=False, indent=2,
-                                )
-                            except Exception:
-                                pretty_in = r["input_json"]
-                            ui.code(pretty_in, language="json").classes("max-w-full")
+                            ui.code(_pretty_json(r["input_json"]), language="json").classes(
+                                "max-w-full"
+                            )
 
                             ui.label("Saída:").style(
                                 "color:#aaa; font-weight:600; margin-top:4px"
                             )
                             if r["output_json"]:
-                                try:
-                                    pretty_out = json.dumps(
-                                        json.loads(r["output_json"]),
-                                        ensure_ascii=False, indent=2,
-                                    )
-                                except Exception:
-                                    pretty_out = r["output_json"]
-                                ui.code(pretty_out, language="json").classes("max-w-full")
+                                ui.code(
+                                    _pretty_json(r["output_json"]), language="json"
+                                ).classes("max-w-full")
                             else:
                                 ui.label("(null)").style(
                                     "color:#666; font-style:italic"

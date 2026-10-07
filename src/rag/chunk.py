@@ -6,6 +6,10 @@ from src.rag.types import Chunk
 
 _SEPARATORS: list[str] = ["\n\n", "\n", ". ", "? ", "! ", " ", ""]
 
+# Defaults da função pura (D-006); a ingestão passa `Settings.chunk_size/overlap`.
+DEFAULT_CHUNK_SIZE = 800
+DEFAULT_CHUNK_OVERLAP = 150
+
 
 def _recursive_split(text: str, size: int, seps: list[str], depth: int) -> list[str]:
     text = text.strip()
@@ -36,7 +40,11 @@ def _recursive_split(text: str, size: int, seps: list[str], depth: int) -> list[
     return out
 
 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[Chunk]:
+def chunk_text(
+    text: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> list[Chunk]:
     """Quebra `text` em chunks de tamanho-alvo `chunk_size` com overlap real.
 
     Contrato (D-006):

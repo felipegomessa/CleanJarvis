@@ -11,6 +11,11 @@ from src.domain.tasks.models import Task
 from src.domain.tasks.repo import list_tasks
 
 
+def _end_of_day(moment: datetime) -> datetime:
+    """Último segundo do dia de `moment` (23:59:59), mantendo o fuso."""
+    return moment.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
 def pending_tasks(conn: sqlite3.Connection) -> list[Task]:
     return list_tasks(conn, status="pending")
 
@@ -32,8 +37,7 @@ def tasks_due_today(
     conn: sqlite3.Connection, tz: ZoneInfo = DEFAULT_TZ
 ) -> list[Task]:
     now = datetime.now(tz)
-    end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
-    return list_tasks(conn, status="pending", only_due_until=end_of_day)
+    return list_tasks(conn, status="pending", only_due_until=_end_of_day(now))
 
 
 def tasks_due_this_week(
@@ -41,6 +45,5 @@ def tasks_due_this_week(
 ) -> list[Task]:
     now = datetime.now(tz)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_end = today + timedelta(days=(6 - today.weekday()))
-    week_end = week_end.replace(hour=23, minute=59, second=59)
+    week_end = _end_of_day(today + timedelta(days=(6 - today.weekday())))
     return list_tasks(conn, status="pending", only_due_until=week_end)

@@ -320,7 +320,7 @@ git clone <url-do-repo>
 cd Trabalho1
 
 # 2. Sincronizar o ambiente virtual e instalar dependências (inclui dev)
-python -m uv sync --extra dev
+python -m uv sync
 
 # 3. Configurar variáveis de ambiente
 copy .env.example .env       # Windows

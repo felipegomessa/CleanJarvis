@@ -86,13 +86,15 @@ def _list_migrations() -> list[tuple[int, Path]]:
     items: list[tuple[int, Path]] = []
     if not MIGRATIONS_DIR.exists():
         return items
-    for f in MIGRATIONS_DIR.glob("*.sql"):
+    for migration_file in MIGRATIONS_DIR.glob("*.sql"):
         try:
-            v = int(f.name.split("_", 1)[0])
+            version = int(migration_file.name.split("_", 1)[0])
         except ValueError:
-            logger.warning(f"migration file {f.name} sem prefixo numérico — ignorada")
+            logger.warning(
+                f"migration file {migration_file.name} sem prefixo numérico — ignorada"
+            )
             continue
-        items.append((v, f))
+        items.append((version, migration_file))
     items.sort(key=lambda x: x[0])
     return items
 

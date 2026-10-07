@@ -11,6 +11,9 @@ from loguru import logger
 
 from src.core.config import get_settings
 
+# Dimensão dos vetores do multilingual-e5-small; casa com `FLOAT[384]` da migration 002.
+EMBEDDING_DIM = 384
+
 _embedder: Any | None = None
 _lock = Lock()
 
@@ -38,7 +41,7 @@ def get_embedder() -> Any:
 def embed_passages(texts: list[str]) -> np.ndarray:
     """Embedda chunks (com prefixo 'passage: ' do e5)."""
     if not texts:
-        return np.empty((0, 384), dtype=np.float32)
+        return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
     model = get_embedder()
     prefixed = [f"passage: {t}" for t in texts]
     emb = model.encode(prefixed, normalize_embeddings=True, convert_to_numpy=True)
